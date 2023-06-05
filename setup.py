@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='git2pdf',
-    version='0.1.5',
+    version='0.1.6',
     packages=['git2pdf'],
     package_data={'git2pdf': ['*.ttf']},
     install_requires=[
