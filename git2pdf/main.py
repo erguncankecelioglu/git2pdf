@@ -1,3 +1,6 @@
+import argparse
+import time
+
 import requests
 import pkg_resources
 import os
@@ -5,41 +8,44 @@ import base64
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
-LINE_WIDTH = 220
-CHARS_PER_LINE = 125
+LINE_WIDTH = 210
+CHARS_PER_LINE = 110
 output_directory = os.path.join(os.path.expanduser("~"), "git2pdf_output")
 
 os.makedirs(output_directory, exist_ok=True)
 
 
-def get_json_from_url(url):
-    response = requests.get(url)
+def get_json_from_url(url, token=None):
+    headers = {}
+    if token:
+        headers['Authorization'] = f"Bearer {token}"
+    response = requests.get(url, headers=headers)
     json_data = response.json()
     if 'message' in json_data:
         print(f"Error: {json_data['message']}")
     return json_data
 
 
-def get_branches(owner, repo):
+def get_branches(owner, repo, token=None):
     branches_url = f"https://api.github.com/repos/{owner}/{repo}/branches"
-    branches_json = get_json_from_url(branches_url)
+    branches_json = get_json_from_url(branches_url, token)
     branches = [branch['name'] for branch in branches_json]
     return branches
 
 
-def get_tree(owner, repo, branch):
+def get_tree(owner, repo, branch, token=None):
     tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
     try:
-        tree_json = get_json_from_url(tree_url)
+        tree_json = get_json_from_url(tree_url, token)
         return tree_json
     except requests.exceptions.RequestException:
         print(f"Error: Couldn't fetch the tree of branch: {branch}")
         return None
 
 
-def fetch_file_content(owner, repo, file_path):
+def fetch_file_content(owner, repo, file_path, token=None):
     contents_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
-    contents_json = get_json_from_url(contents_url)
+    contents_json = get_json_from_url(contents_url, token)
     if 'content' in contents_json:
         try:
             content = base64.b64decode(contents_json['content']).decode('utf-8')
@@ -53,7 +59,7 @@ def fetch_file_content(owner, repo, file_path):
     return None
 
 
-def make_pdf_from_content(file_path, file_content, pdf):
+def make_pdf_from_content(file_path, file_content, pdf, shrink=False, hshrink=False, expand=False, hexpand=False):
     pdf.add_page()
 
     pdf.set_font('DejaVuSans', 'B', 12)
@@ -61,6 +67,22 @@ def make_pdf_from_content(file_path, file_content, pdf):
     pdf.cell(200, 10, txt=f"File: {file_path}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
     pdf.set_text_color(0, 0, 0)
     pdf.set_font('DejaVuSans', '', 10)
+
+    if shrink:
+        line_width = LINE_WIDTH * 0.9
+        chars_per_line = CHARS_PER_LINE * 0.9
+    elif hshrink:
+        line_width = LINE_WIDTH * 0.8
+        chars_per_line = CHARS_PER_LINE * 0.8
+    elif expand:
+        line_width = LINE_WIDTH * 1.1
+        chars_per_line = CHARS_PER_LINE * 1.1
+    elif hexpand:
+        line_width = LINE_WIDTH * 1.2
+        chars_per_line = CHARS_PER_LINE * 1.2
+    else:
+        line_width = LINE_WIDTH
+        chars_per_line = CHARS_PER_LINE
 
     empty_lines_count = 0  # count of consecutive empty lines
     for raw_line in file_content.split('\n'):
@@ -71,7 +93,7 @@ def make_pdf_from_content(file_path, file_content, pdf):
                 continue
             else:
                 # This will effectively print an empty line in the PDF
-                pdf.cell(LINE_WIDTH, 6, txt=" ", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.cell(line_width, 6, txt=" ", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         else:
             empty_lines_count = 0
 
@@ -82,27 +104,39 @@ def make_pdf_from_content(file_path, file_content, pdf):
         line = " " * (indentation * 2)  # Add indentation spaces to the line
         words = stripped_line.split()
         for word in words:
-            if len(line + " " + word) > CHARS_PER_LINE:
-                pdf.cell(LINE_WIDTH, 6, txt=line, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            if len(line + " " + word) > chars_per_line:
+                pdf.cell(line_width, 6, txt=line, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 line = " " * (indentation * 2) + word  # Start a new line with the word
             else:
                 line += " " + word
 
         if line:
-            pdf.cell(LINE_WIDTH, 6, txt=line, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.cell(line_width, 6, txt=line, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     return pdf
 
 
-
 def main():
+    parser = argparse.ArgumentParser(prog='git2pdf', description='Convert a GitHub repository or local directory to PDF')
+    parser.add_argument('--auth', metavar='<YOUR_PERSONAL_ACCESS_TOKEN>', help='GitHub Personal Access Token for authentication. Add your token after --auth param.')
+    parser.add_argument('--shrink', action='store_true', help='Shrink page and character size slightly')
+    parser.add_argument('--hshrink', action='store_true', help='Shrink page and character size more')
+    parser.add_argument('--expand', action='store_true', help='Expand page and character size slightly')
+    parser.add_argument('--hexpand', action='store_true', help='Expand page and character size more')
+    args = parser.parse_args()
+
     source_type = input("Enter 'g' for GitHub repository, 'l' for local directory: ")
+
+    if args.auth and source_type != 'g':
+        print("\nWarning: The authentication token will be ignored since the source type is not a GitHub repository.\n")
+        time.sleep(2)
 
     if source_type == 'g':
         repo_url = input("Enter the GitHub repository URL: ")
 
         owner, repo = repo_url.split("github.com/")[-1].split('/')
         try:
-            branches = get_branches(owner, repo)
+            token = args.auth if args.auth else None
+            branches = get_branches(owner, repo, token)
         except:
             print("Error: Couldn't fetch the branches of the repository.")
             return
@@ -116,7 +150,7 @@ def main():
         else:
             selected_branch = branches[0]
 
-        tree = get_tree(owner, repo, selected_branch)
+        tree = get_tree(owner, repo, selected_branch, token)
 
         print("\nDirectories and Files in the repository:")
 
@@ -144,7 +178,10 @@ def main():
         selected_files = set()
         while selection != 'c':
             if selection == 'a':
-                selected_files = set([file['path'] for file in files])
+                confirmation = input("Are you sure you want to select all files in all directories? (y/n): ")
+                if confirmation == 'y':
+                    selected_files = set([file['path'] for file in files])
+                    break
             if selection == 'd':
                 dir_indices = input(
                     "Enter the numbers of the directories you want to select (separated by spaces): ").split()
@@ -185,7 +222,9 @@ def main():
 
         file_indices = input("Enter 'a' for select all files or enter the numbers of the files you want to select (separated by spaces): ").split()
         if file_indices == ['a']:
-            selected_files = set([os.path.join(current_dir, file) for file in files])
+            confirmation = input("Are you sure you want to select all files in the current directory? (y/n): ")
+            if confirmation == 'y':
+                selected_files = set([os.path.join(current_dir, file) for file in files])
         else:
             selected_files = set()
             for file_index in file_indices:
@@ -205,20 +244,25 @@ def main():
     pdf.add_font('DejaVuSans', 'B', fname=font_path)
     pdf.set_font("DejaVuSans", size=12)
 
+    shrink = args.shrink
+    hshrink = args.hshrink
+    expand = args.expand
+    hexpand = args.hexpand
+
     for file_path in selected_files:
-        if source_type == 'g':
-            file_content = fetch_file_content(owner, repo, file_path)
+        if source_type == 'g' or args.auth:
+            token = args.auth if args.auth else None
+            file_content = fetch_file_content(owner, repo, file_path, token)
             if file_content is not None:
-                pdf = make_pdf_from_content(file_path, file_content, pdf)
+                pdf = make_pdf_from_content(file_path, file_content, pdf, shrink, hshrink, expand, hexpand)
         elif source_type == 'l':
             with open(file_path, 'r') as f:
                 try:
                     file_content = f.read()
                     if file_content is not None:
-                        pdf = make_pdf_from_content(file_path, file_content, pdf)
+                        pdf = make_pdf_from_content(file_path, file_content, pdf, shrink, hshrink, expand, hexpand)
                 except UnicodeDecodeError:
                     print(f"Error: Couldn't read the file {file_path}.")
-
 
     pdf.output(pdf_path)
     print(f"\nPDF created successfully!")
